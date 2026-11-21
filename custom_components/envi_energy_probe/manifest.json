@@ -1,0 +1,17 @@
+{
+  "domain": "envi_energy_probe",
+  "name": "Envi Energy Probe",
+  "version": "0.1.1",
+  "documentation": "https://github.com/rgerrans/Envi-Heater",
+  "codeowners": [
+    "@rgerrans"
+  ],
+  "config_flow": true,
+  "single_config_entry": true,
+  "after_dependencies": [
+    "smart_envi"
+  ],
+  "requirements": [],
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/rgerrans/Envi-Heater/issues"
+}
