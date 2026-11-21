@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN, SOURCE_DOMAIN, SERVICE_NAME
+from .api_inspector import describe_structure, envelope_types, structure_differences
 
 PRIVATE_TERMS = (
     "token", "password", "secret", "auth", "credential", "cookie", "apikey",
@@ -233,6 +234,109 @@ def read_cached_heaters(hass: HomeAssistant) -> list[dict[str, Any]]:
             })
     return result
 
+
+async def inspect_live_api(hass: HomeAssistant, unit: int | None = None) -> dict[str, Any]:
+    """Inspect only known read-only Envi endpoints through an existing client.
+
+    Never return device identifiers, account data, credentials, or raw responses.
+    This makes one device/list request and one device/{id} request per selected
+    heater. Unlike capture, this issues additional Envi cloud requests.
+    """
+    coordinators = _coordinators(hass)
+    if not coordinators:
+        return {
+            "message": "Smart Envi 3.0 coordinator not available; inspect_api requires smart_envi",
+            "source_diagnostics": source_diagnostics(hass),
+        }
+
+    units: list[tuple[int, Any, str]] = []
+    current_number = 0
+    for coordinator in coordinators:
+        for device_id in coordinator.device_ids:
+            current_number += 1
+            if unit is None or unit == current_number:
+                units.append((current_number, coordinator, str(device_id)))
+    if not units:
+        raise HomeAssistantError(f"Envi unit {unit} is not present")
+
+    # Use authenticated client exposed by the coordinator, not fresh credentials.
+    coordinator = units[0][1]
+    client = getattr(coordinator, "client", None)
+    request = getattr(client, "_request", None)
+    if not callable(request):
+        return {"message": "No compatible read-only Smart Envi API client found"}
+
+    try:
+        listing = await request("GET", "device/list")
+        if not isinstance(listing, dict):
+            raise ValueError("Unexpected list response type")
+        records = listing.get("data")
+        # Only inspect one representative record, not personally identifying
+        # identifiers, entries, or arbitrary string values.
+        first_record = next(
+            (item for item in records if isinstance(item, dict)),
+            None,
+        ) if isinstance(records, list) else None
+        device_list_report = {
+            "response_envelope": envelope_types(listing),
+            "record_count": len(records) if isinstance(records, list) else None,
+            "first_record": describe_structure(first_record) if first_record is not None else None,
+            "note": "One list record is summarized by field names/types; identifiers and arbitrary strings are omitted.",
+        }
+    except Exception as exc:
+        device_list_report = {
+            "error": "Device list request failed (" + type(exc).__name__ + ")"
+        }
+
+    heaters = []
+    for number, coordinator, device_id in units:
+        api_client = getattr(coordinator, "client", None)
+        api_request = getattr(api_client, "_request", None)
+        if not callable(api_request):
+            heaters.append({"unit": number, "error": "Read-only API client unavailable"})
+            continue
+        try:
+            # Fixed, known endpoint only: no endpoint guessing or mutation.
+            detail_response = await api_request("GET", f"device/{device_id}")
+            if not isinstance(detail_response, dict):
+                raise ValueError("Unexpected device response type")
+            live = detail_response.get("data")
+            if not isinstance(live, dict):
+                raise ValueError("Expected object in response data")
+            cached = coordinator.get_device_data(device_id)
+            if not isinstance(cached, dict):
+                cached = {}
+            heaters.append({
+                "unit": number,
+                "api_response_envelope": envelope_types(detail_response),
+                "live_device": describe_structure(live),
+                "cached_device": describe_structure(cached),
+                "live_vs_cache": structure_differences(live, cached),
+            })
+        except Exception as exc:
+            heaters.append({
+                "unit": number,
+                "error": "Device detail request failed (" + type(exc).__name__ + ")",
+            })
+
+    return {
+        "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+        "source": "Existing authenticated Smart Envi API client",
+        "read_only_endpoints": ["GET device/list", "GET device/{id}"],
+        "request_count_planned": 1 + len(units),
+        "device_list": device_list_report,
+        "heaters": heaters,
+        "privacy_notice": (
+            "Only filtered field names, types, and allowlisted scalar telemetry are "
+            "included. Responses may still contain unfamiliar field names; review before sharing."
+        ),
+        "interpretation_note": (
+            "Field availability does not establish measured power or element runtime; "
+            "compare physical idle/heating conditions independently."
+        ),
+    }
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Register a response-only diagnostic action."""
     # Always load the diagnostic tools; the heater integration may start later.
@@ -302,9 +406,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=vol.Schema({}),
         supports_response=SupportsResponse.ONLY,
     )
+
+    async def inspect_api(call: ServiceCall) -> dict[str, Any]:
+        return await inspect_live_api(hass, call.data.get("unit"))
+
+    hass.services.async_register(
+        DOMAIN, "inspect_api", inspect_api,
+        schema=vol.Schema({
+            vol.Optional("unit"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        }),
+        supports_response=SupportsResponse.ONLY,
+    )
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_NAME)
     hass.services.async_remove(DOMAIN, "diagnose")
+    hass.services.async_remove(DOMAIN, "inspect_api")
     return True
