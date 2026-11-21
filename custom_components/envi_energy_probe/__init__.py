@@ -125,13 +125,93 @@ def source_diagnostics(hass: HomeAssistant) -> dict[str, Any]:
         "smart_envi_data_present": isinstance(data, dict),
         "recognized_coordinators": len(coordinators),
         "cached_device_counts": [len(c.device_ids) for c in coordinators],
+        "legacy_authenticated_clients": len(_legacy_clients(hass)),
+        "read_strategy": (
+            "coordinator_cache" if coordinators
+            else "legacy_read_only_api" if _legacy_clients(hass)
+            else "unavailable"
+        ),
         "hint": (
             "Probe can read cached records"
             if coordinators else
-            "No compatible Smart Envi coordinator detected; check integration entry states, "
-            "duplicate entries, and installed smart_envi version"
+            "Legacy Envi detected; capture will make read-only API GET requests"
+            if _legacy_clients(hass) else
+            "No compatible Envi client or coordinator detected; check loaded integration version"
         ),
     }
+
+
+def _legacy_clients(hass: HomeAssistant) -> list[Any]:
+    """Locate authenticated, read-only-compatible legacy Envi API clients.
+
+    Older wlatic/envi_heater releases store clients by config-entry ID, without
+    a DataUpdateCoordinator. Credentials and token values are never inspected.
+    """
+    data = hass.data.get("envi_heater")
+    if not isinstance(data, dict):
+        return []
+    result = []
+    for entry in hass.config_entries.async_entries("envi_heater"):
+        client = data.get(entry.entry_id)
+        if (
+            client is not None
+            and callable(getattr(client, "fetch_all_device_ids", None))
+            and callable(getattr(client, "get_device_state", None))
+        ):
+            result.append(client)
+    return result
+
+
+async def read_legacy_heaters(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Fetch old integration's data through its already-authenticated API client.
+
+    This issues GET requests only; no heater controls or credential changes.
+    Raw Envi IDs are used internally, never returned or logged.
+    """
+    result: list[dict[str, Any]] = []
+    index = 0
+    for client in _legacy_clients(hass):
+        try:
+            device_ids = await client.fetch_all_device_ids()
+        except Exception as exc:
+            result.append({
+                "unit": 0,
+                "available": False,
+                "error": "Device discovery failed (" + type(exc).__name__ + ")",
+            })
+            continue
+        for device_id in device_ids:
+            index += 1
+            try:
+                data = await client.get_device_state(str(device_id))
+                if not isinstance(data, dict) or not data:
+                    result.append({
+                        "unit": index,
+                        "available": False,
+                        "error": "Empty or invalid API record",
+                    })
+                    continue
+                result.append({
+                    "unit": index,
+                    "available": True,
+                    **sanitize_device_data(data),
+                })
+            except Exception as exc:
+                result.append({
+                    "unit": index,
+                    "available": False,
+                    "error": "Read-only API request failed (" + type(exc).__name__ + ")",
+                })
+    return result
+
+
+async def read_snapshots(hass: HomeAssistant) -> tuple[list[dict[str, Any]], str]:
+    """Prefer coordinator cache; fall back to legacy read-only API requests."""
+    if _coordinators(hass):
+        return read_cached_heaters(hass), "Smart Envi coordinator cache (no extra API calls)"
+    if _legacy_clients(hass):
+        return await read_legacy_heaters(hass), "Legacy Envi authenticated API (read-only GET requests)"
+    return [], "No compatible Envi integration found"
 
 
 def read_cached_heaters(hass: HomeAssistant) -> list[dict[str, Any]]:
@@ -161,11 +241,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def capture(call: ServiceCall) -> dict[str, Any]:
         phase = call.data["phase"]
         unit = call.data.get("unit")
-        snapshots = read_cached_heaters(hass)
+        snapshots, source = await read_snapshots(hass)
         if not snapshots:
             return {
                 "phase": phase,
-                "source": "Smart Envi coordinator cache (no extra API calls)",
+                "source": source,
                 "source_diagnostics": source_diagnostics(hass),
                 "heaters": [],
                 "message": "No compatible cached heater records found. Run envi_energy_probe.diagnose.",
@@ -199,8 +279,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return {
             "phase": phase,
             "captured_at_utc": datetime.now(timezone.utc).isoformat(),
-            "source": "Smart Envi coordinator cache (no extra API calls)",
-            "note": "Capture time is not device update time; readings do not prove element power draw.",
+            "source": source,
+            "note": "Capture time is not device update time; readings do not prove element power draw. The legacy integration makes read-only cloud GET requests on each capture.",
             "heaters": output,
             "source_diagnostics": source_diagnostics(hass),
         }
