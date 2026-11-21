@@ -22,3 +22,7 @@ capture:
           max: 100
           step: 1
           mode: box
+
+diagnose:
+  name: Diagnose Envi integration
+  description: Report configured Envi entries and whether the original Smart Envi coordinator is available, without exposing credentials.
