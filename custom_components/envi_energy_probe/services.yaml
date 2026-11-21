@@ -26,3 +26,18 @@ capture:
 diagnose:
   name: Diagnose Envi integration
   description: Report configured Envi entries and whether the original Smart Envi coordinator is available, without exposing credentials.
+
+inspect_api:
+  name: Inspect live Envi API response structures
+  description: Uses the existing Smart Envi client to make read-only GET calls for device/list and selected device details. Returns redacted field types and allowlisted telemetry, never raw API responses.
+  fields:
+    unit:
+      required: false
+      name: Heater number
+      description: Optional 1-based heater index. Leave blank to inspect all heaters. Uses one list GET and one device GET per selected heater.
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          mode: box
