@@ -1,0 +1,24 @@
+capture:
+  name: Capture Envi API fields
+  description: Inspect cached Envi fields and compare two captures without changing heaters or making cloud requests.
+  fields:
+    phase:
+      required: true
+      name: Capture phase
+      selector:
+        select:
+          options:
+            - label: Baseline (not heating)
+              value: baseline
+            - label: Heating (compare with baseline)
+              value: heating
+    unit:
+      required: false
+      name: Heater number
+      description: Optional 1-based heater index; leave blank for all heaters.
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          mode: box
