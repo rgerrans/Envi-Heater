@@ -9,7 +9,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
-from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN, SOURCE_DOMAIN, SERVICE_NAME
 
 PRIVATE_TERMS = (
@@ -107,6 +107,33 @@ def _coordinators(hass: HomeAssistant) -> list[Any]:
         and isinstance(getattr(coordinator, "device_ids", None), list)
     ]
 
+def source_diagnostics(hass: HomeAssistant) -> dict[str, Any]:
+    """Explain what Home Assistant has loaded without revealing credentials or IDs."""
+    entries = []
+    for domain in (SOURCE_DOMAIN, "envi_heater"):
+        for index, config_entry in enumerate(hass.config_entries.async_entries(domain), start=1):
+            state = getattr(config_entry, "state", "unknown")
+            entries.append({
+                "domain": domain,
+                "instance": index,
+                "state": getattr(state, "value", str(state)),
+            })
+    data = hass.data.get(SOURCE_DOMAIN)
+    coordinators = _coordinators(hass)
+    return {
+        "configured_envi_entries": entries,
+        "smart_envi_data_present": isinstance(data, dict),
+        "recognized_coordinators": len(coordinators),
+        "cached_device_counts": [len(c.device_ids) for c in coordinators],
+        "hint": (
+            "Probe can read cached records"
+            if coordinators else
+            "No compatible Smart Envi coordinator detected; check integration entry states, "
+            "duplicate entries, and installed smart_envi version"
+        ),
+    }
+
+
 def read_cached_heaters(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Inspect cached records, never exposing Envi device IDs."""
     result: list[dict[str, Any]] = []
@@ -128,8 +155,7 @@ def read_cached_heaters(hass: HomeAssistant) -> list[dict[str, Any]]:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Register a response-only diagnostic action."""
-    if not _coordinators(hass):
-        raise ConfigEntryNotReady("Smart Envi must be running before the probe can attach")
+    # Always load the diagnostic tools; the heater integration may start later.
     baseline: dict[int, dict[str, Any]] = {}
 
     async def capture(call: ServiceCall) -> dict[str, Any]:
@@ -137,7 +163,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         unit = call.data.get("unit")
         snapshots = read_cached_heaters(hass)
         if not snapshots:
-            raise HomeAssistantError("No Smart Envi devices available")
+            return {
+                "phase": phase,
+                "source": "Smart Envi coordinator cache (no extra API calls)",
+                "source_diagnostics": source_diagnostics(hass),
+                "heaters": [],
+                "message": "No compatible cached heater records found. Run envi_energy_probe.diagnose.",
+            }
         if unit is not None:
             snapshots = [s for s in snapshots if s["unit"] == unit]
             if not snapshots:
@@ -170,7 +202,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "source": "Smart Envi coordinator cache (no extra API calls)",
             "note": "Capture time is not device update time; readings do not prove element power draw.",
             "heaters": output,
+            "source_diagnostics": source_diagnostics(hass),
         }
+
+    async def diagnose(call: ServiceCall) -> dict[str, Any]:
+        """Report recognized integrations and coordinator availability."""
+        return source_diagnostics(hass)
 
     hass.services.async_register(
         DOMAIN, SERVICE_NAME, capture,
@@ -180,8 +217,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }),
         supports_response=SupportsResponse.ONLY,
     )
+    hass.services.async_register(
+        DOMAIN, "diagnose", diagnose,
+        schema=vol.Schema({}),
+        supports_response=SupportsResponse.ONLY,
+    )
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_NAME)
+    hass.services.async_remove(DOMAIN, "diagnose")
     return True
