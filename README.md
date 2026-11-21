@@ -14,7 +14,13 @@ A temporary, **read-only** Home Assistant custom integration to inspect data alr
 2. Add **https://github.com/rgerrans/Envi-Heater** with type **Integration**.
 3. Search HACS for **Envi Energy Probe**, install, then restart Home Assistant.
 4. Go to **Settings → Devices & services → Add integration** and select **Envi Energy Probe**. Your existing Envi Smart Heater integration must be running.
-5. Go to **Developer Tools → Actions** and run `envi_energy_probe.capture` with `phase: baseline`.
+5. Go to **Developer Tools → Actions** and run `envi_energy_probe.diagnose` first. The result reports loaded `smart_envi` entries and whether a compatible coordinator was found. Then run `envi_energy_probe.capture` with `phase: baseline`.
+
+## Diagnosing missing integration or duplicate entries
+
+Version 0.1.2 no longer refuses to load when a Smart Envi coordinator is absent. Run `envi_energy_probe.diagnose` under Developer Tools → Actions. It reports the configured `smart_envi` entries and their states, whether the integration has loaded its runtime data, and the number of recognized coordinators and cached devices. It doesn't expose account credentials, integration entry IDs, or heater serial numbers. If `capture` can't locate heater data, it returns diagnostic information instead of a generic startup error.
+
+If you see two Envi Smart Heater config entries, **do not remove one until you've identified which owns your working heater entities**.
 
 ## Compare heater states
 
@@ -32,4 +38,4 @@ Remove the Envi Energy Probe integration, uninstall it from HACS, and restart. Y
 
 ## Test status
 
-Prototype version **0.1.1**. The earlier package was exercised with simulated Home Assistant objects; this GitHub publication has **not yet been verified on your Home Assistant host or live heaters**. Changes to the original integration's internal coordinator layout could make this diagnostic unavailable.
+Prototype version **0.1.2**. The earlier package was exercised with simulated Home Assistant objects; this GitHub publication has **not yet been verified on your Home Assistant host or live heaters**. Changes to the original integration's internal coordinator layout could make this diagnostic unavailable.
